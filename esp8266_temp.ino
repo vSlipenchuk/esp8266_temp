@@ -5,12 +5,17 @@
 
 // Including the ESP8266 WiFi library
 #include <ESP8266WiFi.h>
+#include <EEPROM.h>
 
   // D1, D2, D3, D4, D5 D6 D7 D8 ->  GPIO 5, 4, 0, 2,   14,12,13,15 (esp8266 digitalPins)
   int D[8]={5,4,0,2, 14,12,13,15};
 
 #include "DHT.h"
 #include <OneWire.h>
+
+int target_temperature = 0; // control temp:  +1 grad stops heating -1 starts heating
+int heater_d = 7; // D for connecting relay to heater control
+int heater_reverse = 1; // level for cooling command
 
 OneWire ds(0); //pin4=D2
 float ds_celsius;
@@ -49,15 +54,24 @@ void setup() {
   // Initializing serial port for debugging purposes
   Serial.begin(115200);
   delay(10);
-
-  for(int i=0;i<4;i++) if (D[i]!=DHTPin)  {
+  EEPROM.begin(1);
+  target_temperature = EEPROM.read(0); // first byte is contolled temp
+  EEPROM.end();
+  Serial.println("TargetTemp="+String(target_temperature));
+  
+  for(int i=0;i<8;i++) if (D[i]!=DHTPin)  {
     
      pinMode(D[i],OUTPUT);
      digitalWrite(D[i],LOW);
      }
 
+  ctl_heat(0); // set to cooling
+
+
   dht.begin();
   read_temp();
+
+  every_second();
   
   // Connecting to WiFi network
   Serial.println();
@@ -250,31 +264,74 @@ flash_http200(client);
             client.println(humidityTemp);
               client.println("%</h3><h3>OnBoard Temp: ");
             client.println(ds_celsius);
-            client.println("*C</h3><h3>");
+            client.println("*C</h3>");
+            client.println("<h3>Target temperature:"+String(target_temperature)+"</h3>");
             client.println("</body></html>");     
 }
 
-void do_onoff(WiFiClient client,int pin, int mode) {
-
-  flash_http200(client);
-  if (pin<1 || pin>4) {
-     client.println("ERROR USAGE pin 1..4");
-     
-    } else { // OK
-      pin=D[pin-1]; // decode
+int setD(int pin, int mode) {
+  if (pin<1 || pin>8) return 0;
+  pin=D[pin-1]; // decode
   pinMode(pin,OUTPUT);
   digitalWrite(pin,mode?HIGH:LOW);
-  client.print("PIN:");  client.println(pin); 
-  client.print("MODE:"); client.println(mode);
+  return 1;
+}
+
+void do_onoff(WiFiClient client,int pin, int mode) {
+  flash_http200(client);
+  if (!setD(pin,mode)) {
+     client.println("ERROR USAGE pin 1..8");
+     } else { // OK
+    client.print("PIN:");  client.println(pin); 
+    client.print("MODE:"); client.println(mode);
     }
 }
+
 
  
 
 char url[80]; int l=0; int line_no=0;
+int  reported = 0;
+
+
+void ctl_heat(int ON) {
+  if (!heater_d) return; 
+  // where connected relay and what is normal state...?
+  if (heater_reverse) ON=!ON; 
+  setD(heater_d,(ON?1:0)); // do it on D4 (GPIO2)
+  
+}
+
+void every_second() {
+   
+   read_temp(); // do reading temperature
+   int temp =  ds_celsius;;
+   
+   Serial.println("Uptime:"+String(reported)+" seconds,Temp="+String(temp)+" Target="+String(target_temperature));
+   
+   if (target_temperature) { // if set - need check
+      if ( temp>= target_temperature +1) { 
+         Serial.println("Need cooling");
+         ctl_heat(0);      // do stop
+          }
+      else if ( temp <= target_temperature-1) {
+          Serial.println("Need heat");
+          ctl_heat(1);     // do start
+          }
+      
+   }
+}
+
 
 // runs over and over again
 void loop() {
+int sec = millis()/1000;
+if (sec != reported) {
+   reported =  sec;
+   every_second();
+}
+
+  
   // Listenning for new clients
   WiFiClient client = server.available();
   
@@ -300,6 +357,20 @@ void loop() {
               flash_http200(client);
               client.println(celsiusTemp);
                // send temp
+            }
+            else if (strncmp(u,"/target",7)==0) { // set target temp
+              target_temperature=atoi(u+7);
+          
+              EEPROM.begin(1);
+              EEPROM.write(0,target_temperature);
+              EEPROM.commit();
+              EEPROM.end();
+
+              EEPROM.begin(1);
+              target_temperature=EEPROM.read(0);
+              EEPROM.end();
+                  client.println(target_temperature);
+              
             }
             else { // default page
             read_temp();
