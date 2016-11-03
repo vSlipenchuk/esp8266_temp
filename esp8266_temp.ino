@@ -6,6 +6,7 @@
 // Including the ESP8266 WiFi library
 #include <ESP8266WiFi.h>
 #include <EEPROM.h>
+#include <ESP8266HTTPClient.h>
 
   // D1, D2, D3, D4, D5 D6 D7 D8 ->  GPIO 5, 4, 0, 2,   14,12,13,15 (esp8266 digitalPins)
   int D[8]={5,4,0,2, 14,12,13,15};
@@ -19,6 +20,7 @@ int heater_reverse = 1; // level for cooling command
 
 OneWire ds(0); //pin4=D2
 float ds_celsius;
+int   dht_temp; //
 //OneWire ds(13); //pin15=D8
 
 // Uncomment one of the lines below for whatever DHT sensor type you're using!
@@ -233,6 +235,7 @@ float h = dht.readHumidity();
               Serial.print("Humidity: ");
               Serial.print(h);
               Serial.print(" %\t Temperature: ");
+             dht_temp = t; // print it
               Serial.print(t);
               Serial.print(" *C ");
               Serial.print(f);
@@ -302,13 +305,48 @@ void ctl_heat(int ON) {
   
 }
 
+
+int wget(String Host,String Url) {
+int ret=0;
+HTTPClient http;
+http.begin(Host, 80, Url); //HTTP
+Serial.print("[HTTP] GET...\n");
+int httpCode = http.GET();
+if(httpCode) {
+            Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+            if(httpCode == 200) {
+                String payload = http.getString();
+                Serial.println(payload);
+                ret = 1;
+            }
+        } else {
+            Serial.print("[HTTP] GET... failed, no connection or no HTTP server\n");
+        }
+return ret;
+}
+
+int sec=0;
+
+void every_minute() {
+   wget("api.thingspeak.com","/update?key="+s22key+"&field2="+String(ds_celsius)+"&field1="+String(dht_temp));  
+}
+
 void every_second() {
-   
+
+   // 
    read_temp(); // do reading temperature
    int temp =  ds_celsius;;
+
+    sec++; if (sec>=60) {
+    sec=0;
+    every_minute();
+}
+   //return ;
    
    Serial.println("Uptime:"+String(reported)+" seconds,Temp="+String(temp)+" Target="+String(target_temperature));
-   
+
+   //return ;
+   //
    if (target_temperature) { // if set - need check
       if ( temp>= target_temperature +1) { 
          Serial.println("Need cooling");
