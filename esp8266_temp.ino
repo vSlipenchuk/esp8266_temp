@@ -14,13 +14,18 @@
 #include "DHT.h"
 #include <OneWire.h>
 
+int temp_i = 0; // which temperature sensor use for heating (0 - onboard, 1 - external)
+float T[2]; // temperatures here
+
 int target_temperature = 0; // control temp:  +1 grad stops heating -1 starts heating
 int heater_d = 7; // D for connecting relay to heater control
-int heater_reverse = 1; // level for cooling command
+int heater_cooling = 0; // level for cooling command
+int target_default = 1; // default is -> do heating 
+int heater_cmd = 0 ; // 0 = no heating, 1 - heating (raporting)
 
 OneWire ds(0); //pin4=D2
-float ds_celsius;
-int   dht_temp; //
+//float ds_celsius; = T[0]
+//int   dht_temp; // = T[1]
 //OneWire ds(13); //pin15=D8
 
 // Uncomment one of the lines below for whatever DHT sensor type you're using!
@@ -58,6 +63,7 @@ void setup() {
   delay(10);
   EEPROM.begin(1);
   target_temperature = EEPROM.read(0); // first byte is contolled temp
+  temp_i = EEPROM.read(1); // second byte - temp sensor index (0 or 1)
   EEPROM.end();
   Serial.println("TargetTemp="+String(target_temperature));
   
@@ -67,7 +73,7 @@ void setup() {
      digitalWrite(D[i],LOW);
      }
 
-  ctl_heat(0); // set to cooling
+  ctl_heat(target_default); // set to heating -> controlled by external port
 
 
   dht.begin();
@@ -191,7 +197,7 @@ int read_ds() {
   fahrenheit = celsius * 1.8 + 32.0;
   Serial.print("  Temperature = ");
   Serial.print(celsius);
-  ds_celsius = celsius; // remember
+    T[0]  = celsius; // remember
   Serial.print(" Celsius, ");
   Serial.print(fahrenheit);
   Serial.println(" Fahrenheit");
@@ -235,7 +241,7 @@ float h = dht.readHumidity();
               Serial.print("Humidity: ");
               Serial.print(h);
               Serial.print(" %\t Temperature: ");
-             dht_temp = t; // print it
+             T[1] = t; // print it
               Serial.print(t);
               Serial.print(" *C ");
               Serial.print(f);
@@ -266,7 +272,7 @@ flash_http200(client);
             client.println("*F</h3><h3>Humidity: ");
             client.println(humidityTemp);
               client.println("%</h3><h3>OnBoard Temp: ");
-            client.println(ds_celsius);
+            client.println(T[0]);
             client.println("*C</h3>");
             client.println("<h3>Target temperature:"+String(target_temperature)+"</h3>");
             client.println("</body></html>");     
@@ -300,8 +306,8 @@ int  reported = 0;
 void ctl_heat(int ON) {
   if (!heater_d) return; 
   // where connected relay and what is normal state...?
-  if (heater_reverse) ON=!ON; 
-  setD(heater_d,(ON?1:0)); // do it on D4 (GPIO2)
+heater_cmd = ON; // remember for raport
+  setD(heater_d,(ON?(!heater_cooling):(heater_cooling))); // do it on D4 (GPIO2)
   
 }
 
@@ -326,25 +332,11 @@ return ret;
 }
 
 int sec=0;
+int temp;
 
-void every_minute() {
-   wget("api.thingspeak.com","/update?key="+s22key+"&field2="+String(ds_celsius)+"&field1="+String(dht_temp));  
-}
-
-void every_second() {
-
-   // 
-   read_temp(); // do reading temperature
-   int temp =  ds_celsius;;
-
-    sec++; if (sec>=60) {
-    sec=0;
-    every_minute();
-}
-   //return ;
+void check_heater() {
+  Serial.println("Uptime:"+String(reported)+" seconds,Temp="+String(temp)+" Target="+String(target_temperature));
    
-   Serial.println("Uptime:"+String(reported)+" seconds,Temp="+String(temp)+" Target="+String(target_temperature));
-
    //return ;
    //
    if (target_temperature) { // if set - need check
@@ -357,7 +349,24 @@ void every_second() {
           ctl_heat(1);     // do start
           }
       
+   } else {
+     ctl_heat(target_default); // set target default level
    }
+}
+
+void every_minute() {
+read_temp(); // do reading temperature
+temp =  temp_i==0? T[0]:T[1]; // ds temp or dht temp
+
+   check_heater();
+   wget("api.thingspeak.com","/update?key=" s22key "&field2="+String(T[0])+
+      "&field1="+String(T[1])+"&field3="+String(heater_cmd)+
+      "&field4="+String(target_temperature));  
+}
+
+void every_second() {
+if (sec==0) every_minute();
+sec++; if (sec>=60) sec=0;
 }
 
 
@@ -408,6 +417,17 @@ if (sec != reported) {
               target_temperature=EEPROM.read(0);
               EEPROM.end();
                   client.println(target_temperature);
+              
+            }
+            else if (strncmp(u,"/settemp_i",7)==0) { // set target temp
+              temp_i=atoi(u+6);
+          
+              EEPROM.begin(1);
+              EEPROM.write(1,temp_i);
+              EEPROM.commit();
+              EEPROM.end();
+
+                  client.println(temp_i);
               
             }
             else { // default page
